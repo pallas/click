@@ -4,6 +4,7 @@
  * Benjie Chen, Eddie Kohler
  *
  * Copyright (c) 2000 Mazu Networks, Inc.
+ * Copyright (c) 2010 Meraki, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -39,18 +40,19 @@ RatedSplitter::configure(Vector<String> &conf, ErrorHandler *errh)
     if (cp_va_kparse(conf, this, errh,
 		     "RATE", cpkP+cpkM, cmd, &r, cpEnd) < 0)
 	return -1;
-    _rate.set_rate(r, errh);
+    _rate = r;
+    _tb.assign(r, r);
     return 0;
 }
 
 void
 RatedSplitter::push(int, Packet *p)
 {
-    if (_rate.need_update(Timestamp::now())) {
-	_rate.update();
+    _tb.fill();
+    if (_tb.remove_if(1))
 	output(0).push(p);
-    } else
-	output(1).push(p);
+    else
+	checked_output_push(1, p);
 }
 
 
@@ -61,9 +63,9 @@ RatedSplitter::read_handler(Element *e, void *)
 {
     RatedSplitter *rs = static_cast<RatedSplitter *>(e);
     if (rs->is_bandwidth())
-	return cp_unparse_bandwidth(rs->_rate.rate());
+	return cp_unparse_bandwidth(rs->_rate);
     else
-	return String(rs->_rate.rate());
+	return String(rs->_rate);
 }
 
 void

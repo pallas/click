@@ -5,6 +5,7 @@
  * Eddie Kohler
  *
  * Copyright (c) 1999-2000 Massachusetts Institute of Technology
+ * Copyright (c) 2010 Meraki, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -19,13 +20,15 @@
 
 #include <click/config.h>
 #include "ratedunqueue.hh"
+#include "bwratedunqueue.hh"
 #include <click/confparse.hh>
 #include <click/error.hh>
+#include <click/straccum.hh>
 #include <click/standard/scheduleinfo.hh>
 CLICK_DECLS
 
 RatedUnqueue::RatedUnqueue()
-    : _task(this)
+    : _task(this), _timer(&_task), _runs(0), _pushes(0), _failed_pulls(0), _empty_runs(0), _active(true)
 {
 }
 
@@ -41,7 +44,8 @@ RatedUnqueue::configure(Vector<String> &conf, ErrorHandler *errh)
     if (cp_va_kparse(conf, this, errh,
 		     "RATE", cpkP+cpkM, cmd, &r, cpEnd) < 0)
 	return -1;
-    _rate.set_rate(r, errh);
+    _rate_raw = r;
+    _rate.assign(r, is_bandwidth() ? (r + BandwidthRatedUnqueue::RATE_FILL_MIN) : r);
     return 0;
 }
 
@@ -50,6 +54,7 @@ RatedUnqueue::initialize(ErrorHandler *errh)
 {
     ScheduleInfo::initialize_task(this, &_task, errh);
     _signal = Notifier::upstream_empty_signal(this, 0, &_task);
+    _timer.initialize(this);
     return 0;
 }
 
@@ -57,40 +62,63 @@ bool
 RatedUnqueue::run_task(Task *)
 {
     bool worked = false;
-    if (_rate.need_update(Timestamp::now())) {
-	//_rate.update();  // uncomment this if you want it to run periodically
+    _runs++;
+    if (!_active)
+	return false;
+    _rate.fill();
+    if (_rate.contains(1)) {
 	if (Packet *p = input(0).pull()) {
-	    _rate.update();
+	    _rate.remove(1);
 	    output(0).push(p);
+            _pushes++;
 	    worked = true;
-	} else  // no Packet available
-	    if (use_signal && !_signal)
-		return false;		// without rescheduling
+	} else { // no Packet available
+            _failed_pulls++;
+	    if (!_signal)
+		return false; // without rescheduling
+        }
+    } else {
+	_timer.schedule_after(Timestamp::make_jiffies(_rate.epochs_until_contains(1)));
+	_empty_runs++;
+	return false;
     }
     _task.fast_reschedule();
+    if (!worked)
+        _empty_runs++;
     return worked;
 }
 
-
-// HANDLERS
-
 String
-RatedUnqueue::read_handler(Element *e, void *)
+RatedUnqueue::read_handler(Element *e, void *thunk)
 {
-    RatedUnqueue *rs = static_cast<RatedUnqueue *>(e);
-    if (rs->is_bandwidth())
-	return cp_unparse_bandwidth(rs->_rate.rate());
-    else
-	return String(rs->_rate.rate());
+    RatedUnqueue *ru = (RatedUnqueue *)e;
+    switch ((uintptr_t) thunk) {
+      case h_rate:
+	if (ru->is_bandwidth())
+	    return cp_unparse_bandwidth(ru->_rate_raw);
+	else
+	    return String(ru->_rate_raw);
+      case h_calls: {
+	  StringAccum sa;
+	  sa << ru->_runs << " calls to run_task()\n"
+	     << ru->_empty_runs << " empty runs\n"
+	     << ru->_pushes << " pushes\n"
+	     << ru->_failed_pulls << " failed pulls\n";
+	  return sa.take_string();
+      }
+    }
+    return String();
 }
 
 void
 RatedUnqueue::add_handlers()
 {
-    add_read_handler("rate", read_handler, 0);
+    add_read_handler("calls", read_handler, h_calls);
+    add_read_handler("rate", read_handler, h_rate);
     add_write_handler("rate", reconfigure_keyword_handler, "0 RATE");
+    add_data_handlers("active", Handler::OP_READ | Handler::OP_WRITE | Handler::CHECKBOX, &_active);
     add_task_handlers(&_task);
-    add_read_handler("config", read_handler, 0);
+    add_read_handler("config", read_handler, h_rate);
     set_handler_flags("config", 0, Handler::CALM);
 }
 

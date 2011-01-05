@@ -4,6 +4,7 @@
  *
  * Copyright (c) 1999-2000 Massachusetts Institute of Technology
  * Copyright (c) 2008 Regents of the University of California
+ * Copyright (c) 2010 Meraki, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -43,6 +44,7 @@ RatedSource::configure(Vector<String> &conf, ErrorHandler *errh)
   String data =
     "Random bullshit in a packet, at least 64 bytes long. Well, now it is.";
   unsigned rate = 10;
+  unsigned bandwidth = 0;
   int limit = -1;
   int datasize = -1;
   bool active = true, stop = false;
@@ -55,11 +57,14 @@ RatedSource::configure(Vector<String> &conf, ErrorHandler *errh)
 		   "LENGTH", 0, cpInteger, &datasize,
 		   "DATASIZE", 0, cpInteger, &datasize, // deprecated
 		   "STOP", 0, cpBool, &stop,
+		   "BANDWIDTH", 0, cpBandwidth, &bandwidth,
 		   cpEnd) < 0)
     return -1;
 
   _data = data;
   _datasize = datasize;
+  if (bandwidth > 0)
+      rate = bandwidth / (_datasize < 0 ? _data.length() : _datasize);
   _rate.set_rate(rate, errh);
   _limit = (limit >= 0 ? limit : NO_LIMIT);
   _active = active;

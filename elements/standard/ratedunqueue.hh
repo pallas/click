@@ -2,8 +2,9 @@
 #ifndef CLICK_RATEDUNQUEUE_HH
 #define CLICK_RATEDUNQUEUE_HH
 #include <click/element.hh>
-#include <click/gaprate.hh>
+#include <click/tokenbucket.hh>
 #include <click/task.hh>
+#include <click/timer.hh>
 #include <click/notifier.hh>
 CLICK_DECLS
 
@@ -17,13 +18,9 @@ CLICK_DECLS
  * Pulls packets at the given RATE in packets per second, and pushes them out
  * its single output.
  *
- * RatedUnqueue will use a lot of CPU if given a low RATE.  This is because it
- * maintains the RATE by constantly rescheduling itself until it's time for a
- * packet to be emitted.  TimedUnqueue is often a better choice for low RATEs.
- *
  * =h rate read/write
  *
- * =a BandwidthRatedUnqueue, Unqueue, TimedUnqueue, Shaper, RatedSplitter */
+ * =a BandwidthRatedUnqueue, Unqueue, Shaper, RatedSplitter */
 
 class RatedUnqueue : public Element { public:
 
@@ -44,13 +41,21 @@ class RatedUnqueue : public Element { public:
 
   protected:
 
-    GapRate _rate;
+    TokenBucket _rate;
+    unsigned _rate_raw;
     Task _task;
-    enum { use_signal = 1 };
+    Timer _timer;
     NotifierSignal _signal;
+    uint32_t _runs;
+    uint32_t _pushes;
+    uint32_t _failed_pulls;
+    uint32_t _empty_runs;
 
-    static String read_handler(Element *, void *);
+    enum {h_calls, h_rate};
 
+    static String read_handler(Element *e, void *thunk);
+
+    bool _active;
 };
 
 CLICK_ENDDECLS

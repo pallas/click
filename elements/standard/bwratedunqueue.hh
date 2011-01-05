@@ -19,13 +19,14 @@ CLICK_DECLS
  * =a RatedUnqueue, Unqueue, BandwidthShaper, BandwidthRatedSplitter */
 
 class BandwidthRatedUnqueue : public RatedUnqueue { public:
-
     BandwidthRatedUnqueue();
     ~BandwidthRatedUnqueue();
 
     const char *class_name() const	{ return "BandwidthRatedUnqueue"; }
 
     bool run_task(Task *);
+
+    enum {RATE_FILL_MIN = 100000};
 
 };
 
