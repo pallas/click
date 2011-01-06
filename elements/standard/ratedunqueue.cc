@@ -40,12 +40,54 @@ int
 RatedUnqueue::configure(Vector<String> &conf, ErrorHandler *errh)
 {
     unsigned r;
+    Timestamp dur;
+    bool dur_specified;
+    unsigned tokens;
+    unsigned tokens_specified;
     CpVaParseCmd cmd = (is_bandwidth() ? cpBandwidth : cpUnsigned);
     if (cp_va_kparse(conf, this, errh,
-		     "RATE", cpkP+cpkM, cmd, &r, cpEnd) < 0)
+		     "RATE", cpkP+cpkM, cmd, &r,
+		     "BURST_DURATION", cpkC, &dur_specified, cpTimestamp, &dur,
+		     "BURST_SIZE", cpkC, &tokens_specified, cpUnsigned, &tokens,
+		     cpEnd) < 0)
 	return -1;
+    if (dur_specified && tokens_specified)
+	return errh->error("cannot specify both BURST_DURATION and BURST_SIZE");
+    if (tokens_specified && tokens == 0)
+	return errh->error("BURST_SIZE must be greater than 0");
+    if (!dur_specified && !tokens_specified) {
+	dur_specified = true;
+	dur = Timestamp::make_msec(10);
+    }
+    unsigned burst = 1;
+    if (tokens_specified)
+	burst = tokens;
+    else if (dur_specified) {
+	if (dur < 0 || dur > Timestamp::make_sec(1))
+	    return errh->error("illegal BURST_DURATION (must be 0-1 second)");
+	uint32_t burst_nsec = dur.nsec();
+	if (burst_nsec == 0)
+	    burst = 1;
+	else {
+	    // burst = r * duration = (r * (duration * 1000000000) / 1000000000
+	    uint32_t res[2];
+	    bigint::multiply(res[1], res[0], r, burst_nsec);
+	    bigint::divide(res, res, 2, 1000000000);
+	    burst = res[0];
+	    assert(res[1] == 0);
+	    if (burst == 0)
+		burst = 1;
+	}
+    }
+
+    if (is_bandwidth()) {
+	if (burst + BandwidthRatedUnqueue::RATE_FILL_MIN < burst)
+	    burst = UINT_MAX;
+	else
+	    burst += BandwidthRatedUnqueue::RATE_FILL_MIN;
+    }
     _rate_raw = r;
-    _rate.assign(r, is_bandwidth() ? (r + BandwidthRatedUnqueue::RATE_FILL_MIN) : r);
+    _rate.assign(r, burst);
     return 0;
 }
 
@@ -116,6 +158,8 @@ RatedUnqueue::add_handlers()
     add_read_handler("calls", read_handler, h_calls);
     add_read_handler("rate", read_handler, h_rate);
     add_write_handler("rate", reconfigure_keyword_handler, "0 RATE");
+    add_write_handler("burst_duration", reconfigure_keyword_handler, "BURST_DURATION");
+    add_write_handler("burst_tokens", reconfigure_keyword_handler, "BURST_TOKENS");
     add_data_handlers("active", Handler::OP_READ | Handler::OP_WRITE | Handler::CHECKBOX, &_active);
     add_task_handlers(&_task);
     add_read_handler("config", read_handler, h_rate);
