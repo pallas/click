@@ -32,7 +32,7 @@ BandwidthRatedSplitter::~BandwidthRatedSplitter()
 void
 BandwidthRatedSplitter::push(int, Packet *p)
 {
-    _tb.fill();
+    _tb.refill();
     if (_tb.remove_if(p->length()))
 	output(0).push(p);
     else

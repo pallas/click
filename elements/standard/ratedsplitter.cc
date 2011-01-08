@@ -48,7 +48,7 @@ RatedSplitter::configure(Vector<String> &conf, ErrorHandler *errh)
 void
 RatedSplitter::push(int, Packet *p)
 {
-    _tb.fill();
+    _tb.refill();
     if (_tb.remove_if(1))
 	output(0).push(p);
     else

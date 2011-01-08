@@ -35,7 +35,7 @@ BandwidthRatedUnqueue::run_task(Task *)
 {
     bool worked = false;
     _runs++;
-    _rate.fill();
+    _rate.refill();
 
     if (!_active)
 	return false;

@@ -107,7 +107,7 @@ RatedUnqueue::run_task(Task *)
     _runs++;
     if (!_active)
 	return false;
-    _rate.fill();
+    _rate.refill();
     if (_rate.contains(1)) {
 	if (Packet *p = input(0).pull()) {
 	    _rate.remove(1);
