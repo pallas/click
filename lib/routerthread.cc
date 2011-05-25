@@ -67,7 +67,7 @@ static unsigned long greedy_schedule_jiffies;
  */
 
 RouterThread::RouterThread(Master *m, int id)
-    : _pending_head(0), _pending_tail(&_pending_head),
+    : _stop_flag(0), _pending_head(0), _pending_tail(&_pending_head),
       _master(m), _id(id)
 {
 #if !HAVE_TASK_HEAP
@@ -527,7 +527,6 @@ RouterThread::process_pending()
 void
 RouterThread::driver()
 {
-    const volatile int * const stopper = _master->stopper_ptr();
     int iter = 0;
 #if CLICK_LINUXMODULE
     // this task is running the driver
@@ -564,7 +563,7 @@ RouterThread::driver()
     _driver_epoch++;
 #endif
 
-    if (*stopper == 0) {
+    if (_stop_flag == 0) {
 	// run occasional tasks: timers, select, etc.
 	iter++;
 
@@ -627,7 +626,7 @@ RouterThread::driver()
 
 #if !BSD_NETISRSCHED
     // check to see if driver is stopped
-    if (*stopper > 0) {
+    if (_stop_flag > 0) {
 	driver_unlock_tasks();
 	bool b = _master->check_driver();
 	driver_lock_tasks();

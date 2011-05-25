@@ -547,6 +547,14 @@ SelectSet::run_selects(RouterThread *thread)
 
     bool more_tasks = thread->active();
 
+    // Return early if paused.
+    if (thread->master()->paused() || thread->stop_flag()) {
+#if HAVE_MULTITHREAD
+	thread->_select_blocked = false;
+#endif
+	goto unlock_exit;
+    }
+
 #if HAVE_MULTITHREAD
     if (selecting_thread) {
 	// Another thread is blocked in select().  No point in this thread's
@@ -583,14 +591,6 @@ SelectSet::run_selects(RouterThread *thread)
 	return;
     }
 #endif
-
-    // Return early if paused.
-    if (thread->master()->paused()) {
-#if HAVE_MULTITHREAD
-	thread->_select_blocked = false;
-#endif
-	goto unlock_exit;
-    }
 
     // Return early (just run signals) if there are no selectors and there are
     // tasks to run.
