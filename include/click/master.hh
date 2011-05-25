@@ -5,16 +5,8 @@
 #include <click/atomic.hh>
 #include <click/timerset.hh>
 #if CLICK_USERLEVEL
-# include <unistd.h>
+# include <click/selectset.hh>
 # include <signal.h>
-# if HAVE_POLL_H && !HAVE_USE_SELECT
-#  include <poll.h>
-# endif
-# if HAVE_SYS_EVENT_H && HAVE_KQUEUE && !HAVE_USE_SELECT && !HAVE_USE_POLL && !defined(HAVE_USE_KQUEUE)
-#  define HAVE_USE_KQUEUE 1
-# elif (!HAVE_SYS_EVENT_H || !HAVE_KQUEUE) && HAVE_USE_KQUEUE
-#  error "--enable-select=kqueue is not supported on this system"
-# endif
 #endif
 #if CLICK_NS
 # include <click/simclick.h>
@@ -45,12 +37,13 @@ class Master { public:
     const TimerSet &timer_set() const		{ return _ts; }
 
 #if CLICK_USERLEVEL
-    int add_select(int fd, Element *element, int mask);
-    int remove_select(int fd, Element *element, int mask);
-    void run_selects(RouterThread *thread);
+    SelectSet &select_set()			{ return _selects; }
+    const SelectSet &select_set() const		{ return _selects; }
 
     int add_signal_handler(int signo, Router *router, String handler);
     int remove_signal_handler(int signo, Router *router, String handler);
+    void process_signals(RouterThread *thread);
+    static void signal_handler(int signo);	// not really public
 #endif
 
     void kill_router(Router*);
@@ -101,42 +94,8 @@ class Master { public:
     TimerSet _ts;
 
 #if CLICK_USERLEVEL
-    // SELECT
-    struct ElementSelector {
-	Element *read;
-	Element *write;
-	ElementSelector()
-	    : read(0), write(0)
-	{
-	}
-    };
-# if HAVE_USE_KQUEUE
-    int _kqueue;
-# endif
-# if !HAVE_POLL_H || HAVE_USE_SELECT
-    struct pollfd {
-	int fd;
-	int events;
-    };
-    fd_set _read_select_fd_set;
-    fd_set _write_select_fd_set;
-    int _max_select_fd;
-# endif /* !HAVE_POLL_H || HAVE_USE_SELECT */
-    Vector<struct pollfd> _pollfds;
-    Vector<ElementSelector> _element_selectors;
-    Vector<int> _fd_to_pollfd;
-    Spinlock _select_lock;
-    void register_select(int fd, bool add_read, bool add_write);
-    void remove_pollfd(int pi, int event);
-    inline void call_selected(int fd, int mask) const;
-# if HAVE_USE_KQUEUE
-    void run_selects_kqueue(RouterThread *thread, bool more_tasks);
-# endif
-# if HAVE_POLL_H && !HAVE_USE_SELECT
-    void run_selects_poll(RouterThread *thread, bool more_tasks);
-# else
-    void run_selects_select(RouterThread *thread, bool more_tasks);
-# endif
+    // SELECTS
+    SelectSet _selects;
 
     // SIGNALS
     struct SignalInfo {
@@ -154,8 +113,6 @@ class Master { public:
     SignalInfo *_siginfo;
     sigset_t _sig_dispatching;
     Spinlock _signal_lock;
-    void process_signals(RouterThread *thread);
-    inline void run_signals(RouterThread *thread);
 #endif
 
 #if CLICK_NS
@@ -206,16 +163,28 @@ RouterThread::timer_set() const
     return _master->timer_set();
 }
 
+inline SelectSet &
+RouterThread::select_set()
+{
+    return _master->select_set();
+}
+
+inline const SelectSet &
+RouterThread::select_set() const
+{
+    return _master->select_set();
+}
+
 #if CLICK_USERLEVEL
 inline void
-Master::run_signals(RouterThread *thread)
+RouterThread::run_signals()
 {
 # if HAVE_MULTITHREAD
-    if (thread->_wake_pipe_pending || signals_pending)
-	process_signals(thread);
+    if (_wake_pipe_pending || Master::signals_pending)
+	_master->process_signals(this);
 # else
-    if (signals_pending)
-	process_signals(thread);
+    if (Master::signals_pending)
+	_master->process_signals(this);
 # endif
 }
 
@@ -290,6 +259,14 @@ Element::master() const
 {
     return _router->master();
 }
+
+#if CLICK_USERLEVEL && HAVE_MULTITHREAD
+# if HAVE___SYNC_SYNCHRONIZE
+#  define click_master_mb()	__sync_synchronize()
+# else
+#  define click_master_mb()	__asm__ volatile("" : : : "memory")
+# endif
+#endif
 
 CLICK_ENDDECLS
 #endif
