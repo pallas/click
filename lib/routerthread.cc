@@ -700,7 +700,7 @@ RouterThread::driver_once()
 }
 
 void
-RouterThread::unschedule_router_tasks(Router* r)
+RouterThread::kill_router(Router *r)
 {
     lock_tasks();
 #if HAVE_TASK_HEAP
@@ -730,6 +730,8 @@ RouterThread::unschedule_router_tasks(Router* r)
     t->_prev = prev;
 #endif
     unlock_tasks();
+
+    _timers.kill_router(r);
 }
 
 #if CLICK_DEBUG_SCHEDULING
