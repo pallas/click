@@ -68,6 +68,10 @@ SelectSet::SelectSet()
 #endif
     _pollfds.push_back(dummy);
     _pollfds.clear();
+
+#if HAVE_MULTITHREAD
+    _select_processor = click_invalid_processor();
+#endif
 }
 
 SelectSet::~SelectSet()
@@ -98,7 +102,7 @@ SelectSet::initialize()
 void
 SelectSet::kill_router(Router *router)
 {
-    _select_lock.acquire();
+    lock();
     for (int pi = 0; pi < _pollfds.size(); pi++) {
 	int fd = _pollfds[pi].fd;
 	// take components out of the arrays early
@@ -112,7 +116,7 @@ SelectSet::kill_router(Router *router)
 	if (pi < _pollfds.size() && _pollfds[pi].fd != fd)
 	    pi--;
     }
-    _select_lock.release();
+    unlock();
 }
 
 void
@@ -192,7 +196,7 @@ SelectSet::add_select(int fd, Element *element, int mask)
     if (mask == 0)
 	return 0;
     assert(element && (mask & ~(SELECT_READ | SELECT_WRITE)) == 0);
-    _select_lock.acquire();
+    lock();
 
     // check whether to add readability, writability, or both; it is an error
     // for more than one element to wait on the same fd for the same status
@@ -202,7 +206,7 @@ SelectSet::add_select(int fd, Element *element, int mask)
 	    add_read = true;
 	else if (_selinfo[fd].read != element) {
 	unlock_and_return_error:
-	    _select_lock.release();
+	    unlock();
 	    return -1;
 	}
     }
@@ -213,7 +217,7 @@ SelectSet::add_select(int fd, Element *element, int mask)
 	    goto unlock_and_return_error;
     }
     if (!add_read && !add_write) {
-	_select_lock.release();
+	unlock();
 	return 0;
     }
 
@@ -232,7 +236,7 @@ SelectSet::add_select(int fd, Element *element, int mask)
 	_blocked->wake();
 #endif
 
-    _select_lock.release();
+    unlock();
     return 0;
 }
 
@@ -294,7 +298,7 @@ SelectSet::remove_select(int fd, Element *element, int mask)
     if (fd < 0)
 	return -1;
     assert(element && (mask & ~(SELECT_READ | SELECT_WRITE)) == 0);
-    _select_lock.acquire();
+    lock();
 
     bool remove_read = false, remove_write = false;
     if ((mask & SELECT_READ) && fd < _selinfo.size()
@@ -304,7 +308,7 @@ SelectSet::remove_select(int fd, Element *element, int mask)
 	&& _selinfo[fd].write == element)
 	remove_write = true;
     if (!remove_read && !remove_write) {
-	_select_lock.release();
+	unlock();
 	return -1;
     }
 
@@ -313,13 +317,22 @@ SelectSet::remove_select(int fd, Element *element, int mask)
 	remove_pollfd(pi, POLLIN);
     if (remove_write)
 	remove_pollfd(pi, POLLOUT);
-    _select_lock.release();
+    unlock();
     return 0;
 }
 
-inline void
-SelectSet::post_select(RouterThread *thread)
+inline bool
+SelectSet::post_select(RouterThread *thread, bool acquire)
 {
+#if HAVE_MULTITHREAD
+    if (acquire) {
+	_select_lock.acquire();
+	_select_processor = click_current_processor();
+    }
+#else
+    (void) acquire;
+#endif
+
     _blocked = 0;
     if (_wake_pipe_pending) {
 	_wake_pipe_pending = false;
@@ -327,21 +340,29 @@ SelectSet::post_select(RouterThread *thread)
 	while (read(_wake_pipe[0], crap, 64) == 64)
 	    /* do nothing */;
     }
+
+    if (thread->master()->paused() || thread->stop_flag())
+	return true;
+
     thread->run_signals();
+    return false;
 }
 
 inline void
 SelectSet::call_selected(int fd, int mask) const
 {
+    Element *read = 0, *write = 0;
     if ((unsigned) fd < (unsigned) _selinfo.size()) {
 	const SelectorInfo &es = _selinfo[fd];
-	Element *read = (mask & Element::SELECT_READ ? es.read : 0);
-	Element *write = (mask & Element::SELECT_WRITE ? es.write : 0);
-	if (read)
-	    read->selected(fd, write == read ? mask : Element::SELECT_READ);
-	if (write && write != read)
-	    write->selected(fd, Element::SELECT_WRITE);
+	if (mask & Element::SELECT_READ)
+	    read = es.read;
+	if (mask & Element::SELECT_WRITE)
+	    write = es.write;
     }
+    if (read)
+	read->selected(fd, write == read ? mask : Element::SELECT_READ);
+    if (write && write != read)
+	write->selected(fd, Element::SELECT_WRITE);
 }
 
 #if HAVE_USE_KQUEUE
@@ -359,8 +380,8 @@ SelectSet::run_selects_kqueue(RouterThread *thread)
 {
 # if HAVE_MULTITHREAD
     click_master_mb();
-# endif
     _select_lock.release();
+# endif
 
     // Decide how long to wait.
     struct timespec wait, *wait_ptr = &wait;
@@ -378,9 +399,9 @@ SelectSet::run_selects_kqueue(RouterThread *thread)
     int n = kevent(_kqueue, 0, 0, &kev[0], 256, wait_ptr);
     int was_errno = errno;
 
-    post_select(thread);
+    if (post_select(thread, true))
+	return;
 
-    _select_lock.acquire();
     thread->set_thread_state(RouterThread::S_RUNSELECT);
     if (n < 0 && was_errno != EINTR)
 	perror("kevent");
@@ -408,10 +429,10 @@ SelectSet::run_selects_poll(RouterThread *thread)
     // block
     Vector<struct pollfd> my_pollfds(_pollfds);
     click_master_mb();
+    _select_lock.release();
 # else
     Vector<struct pollfd> &my_pollfds(_pollfds);
 # endif
-    _select_lock.release();
 
     // Decide how long to wait.
     int timeout;
@@ -428,9 +449,9 @@ SelectSet::run_selects_poll(RouterThread *thread)
     int n = poll(my_pollfds.begin(), my_pollfds.size(), timeout);
     int was_errno = errno;
 
-    post_select(thread);
+    if (post_select(thread, true))
+	return;
 
-    _select_lock.acquire();
     thread->set_thread_state(RouterThread::S_RUNSELECT);
     if (n < 0 && was_errno != EINTR)
 	perror("poll");
@@ -466,8 +487,8 @@ SelectSet::run_selects_select(RouterThread *thread)
 
 # if HAVE_MULTITHREAD
     click_master_mb();
-# endif
     _select_lock.release();
+# endif
 
     // Decide how long to wait.
     struct timeval wait, *wait_ptr = &wait;
@@ -484,9 +505,9 @@ SelectSet::run_selects_select(RouterThread *thread)
     int n = select(n_select_fd, &read_mask, &write_mask, (fd_set*) 0, wait_ptr);
     int was_errno = errno;
 
-    post_select(thread);
+    if (post_select(thread, true))
+	return;
 
-    _select_lock.acquire();
     thread->set_thread_state(RouterThread::S_RUNSELECT);
     if (n < 0 && was_errno != EINTR)
 	perror("select");
@@ -520,8 +541,10 @@ SelectSet::run_selects(RouterThread *thread)
     // Wait in select() for input or timer, and call relevant elements'
     // selected() methods.
 
+#if HAVE_MULTITHREAD
     if (!_select_lock.attempt())
 	return;
+#endif
 
     // set _blocked first: then, if someone else is concurrently waking us up,
     // we will either detect that the thread is now active(), or wake up on
@@ -533,34 +556,43 @@ SelectSet::run_selects(RouterThread *thread)
 
     // Return early if paused.
     if (thread->master()->paused() || thread->stop_flag()) {
+#if HAVE_MULTITHREAD
+	_select_lock.release();
+#endif
 	_blocked = 0;
-	goto unlock_exit;
+	return;
     }
 
     // Return early (just run signals) if there are no selectors and there are
     // tasks to run.  NB there will always be at least one _pollfd (the
     // _wake_pipe).
     if (_pollfds.size() < 2 && thread->active()) {
+#if HAVE_MULTITHREAD
 	_select_lock.release();
-	post_select(thread);
+#endif
+	post_select(thread, false);
 	return;
     }
 
     // Call the relevant selector implementation.
+    do {
 #if HAVE_USE_KQUEUE
-    if (_kqueue >= 0) {
-	run_selects_kqueue(thread);
-	goto unlock_exit;
-    }
+	if (_kqueue >= 0) {
+	    run_selects_kqueue(thread);
+	    break;
+	}
 #endif
 #if HAVE_POLL_H && !HAVE_USE_SELECT
-    run_selects_poll(thread);
+	run_selects_poll(thread);
 #else
-    run_selects_select(thread);
+	run_selects_select(thread);
 #endif
+    } while (0);
 
- unlock_exit:
+#if HAVE_MULTITHREAD
+    _select_processor = click_invalid_processor();
     _select_lock.release();
+#endif
 }
 
 CLICK_ENDDECLS
