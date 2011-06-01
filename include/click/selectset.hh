@@ -25,10 +25,13 @@ class SelectSet { public:
     SelectSet();
     ~SelectSet();
 
+    void initialize();
+
     int add_select(int fd, Element *element, int mask);
     int remove_select(int fd, Element *element, int mask);
 
     void run_selects(RouterThread *thread);
+    inline void wake();
 
     void kill_router(Router *router);
 
@@ -44,6 +47,9 @@ class SelectSet { public:
 	}
     };
 
+    int _wake_pipe[2];
+    volatile bool _wake_pipe_pending;
+    RouterThread * volatile _blocked;
 #if HAVE_USE_KQUEUE
     int _kqueue;
 #endif
@@ -60,25 +66,31 @@ class SelectSet { public:
     Vector<SelectorInfo> _selinfo;
     Spinlock _select_lock;
 
-#if HAVE_MULTITHREAD
-    static RouterThread * volatile selecting_thread;
-#endif
-
     void register_select(int fd, bool add_read, bool add_write);
     void remove_pollfd(int pi, int event);
     inline void call_selected(int fd, int mask) const;
+    inline void post_select(RouterThread *thread);
 #if HAVE_USE_KQUEUE
-    void run_selects_kqueue(RouterThread *thread, bool more_tasks);
+    void run_selects_kqueue(RouterThread *thread);
 #endif
 #if HAVE_POLL_H && !HAVE_USE_SELECT
-    void run_selects_poll(RouterThread *thread, bool more_tasks);
+    void run_selects_poll(RouterThread *thread);
 #else
-    void run_selects_select(RouterThread *thread, bool more_tasks);
+    void run_selects_select(RouterThread *thread);
 #endif
 
     friend class Master;	// for _select_lock
 
 };
+
+inline void
+SelectSet::wake()
+{
+    if (_blocked) {
+	_wake_pipe_pending = true;
+	ignore_result(write(_wake_pipe[1], "", 1));
+    }
+}
 
 CLICK_ENDDECLS
 #endif
